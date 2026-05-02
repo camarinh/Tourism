@@ -28,9 +28,9 @@ const FIELD_SCHEMA = [
   { key: "experience1Vip", label: "Experience 1 VIP", type: "bool" },
 
   { key: "experience2Status", label: "Experience 2 Booked", type: "bool" },
-  { key: "Experience2Name", label: "Experience 2 Name", type: "experience" },
-  { key: "Experience2Date", label: "Experience 2 Date", type: "dateParts" },
-  { key: "Experience2Time", label: "Experience 2 Time", type: "timeParts" },
+  { key: "experience2Name", label: "Experience 2 Name", type: "experience" },
+  { key: "experience2Date", label: "Experience 2 Date", type: "dateParts" },
+  { key: "experience2Time", label: "Experience 2 Time", type: "timeParts" },
   { key: "experience2Transfer", label: "Experience 2 Transfer", type: "bool" },
   { key: "experience2Vip", label: "Experience 2 VIP", type: "bool" }
 ];
@@ -54,7 +54,7 @@ const GROUPS = [
   {
     id: "exp2",
     label: "4) Experience 2",
-    fields: ["experience2Status", "Experience2Name", "Experience2Date", "Experience2Time", "experience2Transfer", "experience2Vip"]
+    fields: ["experience2Status", "experience2Name", "experience2Date", "experience2Time", "experience2Transfer", "experience2Vip"]
   }
 ];
 
