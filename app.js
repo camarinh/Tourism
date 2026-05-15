@@ -1,5 +1,9 @@
 const API_BASE = "https://69f277cab15130b97352f41e.mockapi.io/Customer";
 
+/* -------------------- WEBHOOK CONFIG -------------------- */
+const WEBHOOK_URL = "https://hooks.us.webexconnect.io/events/IS1C1C1PX4";
+const WEBHOOK_KEY = "1d58169c-1cbe-11f0-910b-02e3b0a35a3b";
+
 const EXPERIENCE_OPTIONS = [
   "Blue Mountain Farm-to-Table Dining Experience *VIP*",
   "Powerboat Adventure & Beachside Lunch Montego Bay *VIP*",
@@ -59,6 +63,7 @@ const GROUPS = [
 ];
 
 document.addEventListener("DOMContentLoaded", () => {
+  console.log("[init] DOMContentLoaded");
   injectExtraStyles();
   initMainTabs();
   buildCreateFormWithInternalTabs();
@@ -87,9 +92,62 @@ function injectExtraStyles() {
     .kanban-card-head{margin-bottom:8px}
     .edit-inline-wrap{display:flex;gap:6px;align-items:center}
     .edit-inline-wrap input,.edit-inline-wrap select{margin:0}
+    .notify-wrap{margin-top:10px;display:flex;gap:8px;flex-wrap:wrap}
+    .notify-btn{
+      background:#202738;border:1px solid #4da3ff;color:#d7def0;
+      padding:7px 10px;border-radius:8px;font-size:.82rem;cursor:pointer;font-weight:700
+    }
+
+    .cx-toast{
+      position:fixed; right:16px; top:16px; z-index:99999;
+      color:#fff; padding:10px 14px; border-radius:8px;
+      box-shadow:0 2px 8px rgba(0,0,0,.25); font-size:.9rem;
+    }
+    .cx-toast.ok{ background:#2e7d32; }
+    .cx-toast.err{ background:#d32f2f; }
+
     @media (max-width:900px){ .compact-grid{grid-template-columns:1fr} }
   `;
   document.head.appendChild(style);
+}
+
+/* -------------------- webhook + toast helpers -------------------- */
+function showToast(message, isError = false) {
+  const t = document.createElement("div");
+  t.className = `cx-toast ${isError ? "err" : "ok"}`;
+  t.textContent = message;
+  document.body.appendChild(t);
+  setTimeout(() => t.remove(), 2000);
+}
+
+async function sendReservationWebhook(record) {
+  console.log("[webhook] sending", record);
+
+  try {
+    const res = await fetch(WEBHOOK_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "key": WEBHOOK_KEY
+      },
+      body: JSON.stringify(record)
+    });
+
+    const text = await res.text().catch(() => "");
+    console.log("[webhook] response", res.status, text);
+
+    if (res.ok) {
+      showToast("Notification sent");
+      return true;
+    }
+
+    showToast("Notification failed", true);
+    return false;
+  } catch (err) {
+    console.error("[webhook] error", err);
+    showToast("Notification failed", true);
+    return false;
+  }
 }
 
 /* -------------------- main tabs -------------------- */
@@ -404,14 +462,28 @@ function renderResults(records) {
       panelWrap.appendChild(panel);
     });
 
+    const notifyWrap = document.createElement("div");
+    notifyWrap.className = "notify-wrap";
+
+    const notifyBtn = document.createElement("button");
+    notifyBtn.className = "notify-btn";
+    notifyBtn.textContent = "Notify";
+    notifyBtn.addEventListener("click", async () => {
+      console.log("[notify] manual send for record", rec.id);
+      await sendReservationWebhook(rec);
+    });
+
     const del = document.createElement("button");
     del.className = "btn btn-red";
     del.textContent = "Delete";
     del.addEventListener("click", () => deleteRecord(rec.id));
 
+    notifyWrap.appendChild(notifyBtn);
+    notifyWrap.appendChild(del);
+
     card.appendChild(tabs);
     card.appendChild(panelWrap);
-    card.appendChild(del);
+    card.appendChild(notifyWrap);
 
     box.appendChild(card);
   });
@@ -481,10 +553,21 @@ function inlineEditField(rec, field) {
   save.textContent = "Save";
 
   save.addEventListener("click", async () => {
+    const oldStatus = rec.reservationStatus;
     const newVal = (field.type === "bool") ? (editor.value === "true") : editor.value;
-    await updateRecord(rec.id, { [field.key]: newVal });
+
+    const updated = await updateRecord(rec.id, { [field.key]: newVal });
+    if (!updated) return;
+
     rec[field.key] = newVal;
     cell.textContent = formatValue(newVal);
+
+    // Auto webhook only if reservationStatus changed and save succeeded
+    if (field.key === "reservationStatus" && oldStatus !== newVal) {
+      console.log("[status-change] triggering webhook from Search/Edit", rec.id, oldStatus, "->", newVal);
+      await sendReservationWebhook(updated);
+    }
+
     loadKanban();
   });
 
@@ -494,14 +577,27 @@ function inlineEditField(rec, field) {
 
 async function updateRecord(id, patchObj) {
   try {
-    await fetch(`${API_BASE}/${id}`, {
+    console.log("[updateRecord] PUT", id, patchObj);
+
+    const res = await fetch(`${API_BASE}/${id}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(patchObj)
     });
+
+    if (!res.ok) {
+      console.error("[updateRecord] failed", res.status);
+      alert("Update failed.");
+      return null;
+    }
+
+    const json = await res.json();
+    console.log("[updateRecord] success", json);
+    return json; // full updated record
   } catch (err) {
     console.error(err);
     alert("Update failed.");
+    return null;
   }
 }
 
@@ -552,8 +648,21 @@ async function loadKanban() {
       if (s === status) o.selected = true;
       statusSel.appendChild(o);
     });
+
     statusSel.addEventListener("change", async () => {
-      await updateRecord(rec.id, { reservationStatus: statusSel.value });
+      const oldStatus = rec.reservationStatus;
+      const newStatus = statusSel.value;
+
+      const updated = await updateRecord(rec.id, { reservationStatus: newStatus });
+      if (!updated) return;
+
+      rec.reservationStatus = newStatus;
+
+      if (oldStatus !== newStatus) {
+        console.log("[status-change] triggering webhook from Kanban", rec.id, oldStatus, "->", newStatus);
+        await sendReservationWebhook(updated);
+      }
+
       loadKanban();
       loadAllRecords();
     });
@@ -592,6 +701,21 @@ async function loadKanban() {
     card.appendChild(tabs);
     card.appendChild(panelWrap);
 
+    // Manual Notify button on Kanban card too
+    const notifyWrap = document.createElement("div");
+    notifyWrap.className = "notify-wrap";
+
+    const notifyBtn = document.createElement("button");
+    notifyBtn.className = "notify-btn";
+    notifyBtn.textContent = "Notify";
+    notifyBtn.addEventListener("click", async () => {
+      console.log("[notify] manual send for record (kanban)", rec.id);
+      await sendReservationWebhook(rec);
+    });
+
+    notifyWrap.appendChild(notifyBtn);
+    card.appendChild(notifyWrap);
+
     if (status === "Booked") colBooked.appendChild(card);
     if (status === "Confirmed") colConfirmed.appendChild(card);
     if (status === "Cancelled") colCancelled.appendChild(card);
@@ -605,7 +729,12 @@ function wireEmailWidget() {
   const subEl = document.getElementById("mailSubject");
   const attachEl = document.getElementById("mailAttach");
 
-  document.getElementById("mailSendBtn").addEventListener("click", () => {
+  if (!nameEl || !fromEl || !subEl || !attachEl) {
+    console.warn("[email] widget elements not found. Skipping wireEmailWidget.");
+    return;
+  }
+
+  document.getElementById("mailSendBtn")?.addEventListener("click", () => {
     const name = nameEl.value.trim();
     const from = fromEl.value.trim();
     const subject = subEl.value.trim() || "Customer message";
@@ -624,8 +753,8 @@ function wireEmailWidget() {
     window.location.href = mailto;
   });
 
-  document.getElementById("mailCancelBtn").addEventListener("click", clearEmailWidget);
-  document.getElementById("mailClearBtn").addEventListener("click", clearEmailWidget);
+  document.getElementById("mailCancelBtn")?.addEventListener("click", clearEmailWidget);
+  document.getElementById("mailClearBtn")?.addEventListener("click", clearEmailWidget);
 
   function clearEmailWidget() {
     nameEl.value = "";
