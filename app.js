@@ -1,5 +1,9 @@
 const API_BASE = "https://69f277cab15130b97352f41e.mockapi.io/Customer";
 
+/* -------------------- WEBHOOK CONFIG -------------------- */
+const WEBHOOK_URL = "https://hooks.us.webexconnect.io/events/IS1C1C1PX4";
+const WEBHOOK_KEY = "1d58169c-1cbe-11f0-910b-02e3b0a35a3b";
+
 const EXPERIENCE_OPTIONS = [
   "Blue Mountain Farm-to-Table Dining Experience *VIP*",
   "Powerboat Adventure & Beachside Lunch Montego Bay *VIP*",
@@ -87,9 +91,53 @@ function injectExtraStyles() {
     .kanban-card-head{margin-bottom:8px}
     .edit-inline-wrap{display:flex;gap:6px;align-items:center}
     .edit-inline-wrap input,.edit-inline-wrap select{margin:0}
+    .inline-actions{display:flex;gap:8px;margin-top:10px;flex-wrap:wrap}
+    .notify-btn{
+      background:#2a3550;border:1px solid #3a4a6b;color:#e7ecf7;
+      border-radius:7px;padding:7px 10px;cursor:pointer;font-size:.83rem;font-weight:700
+    }
+    .toast{
+      position:fixed;top:16px;right:16px;padding:10px 14px;border-radius:8px;
+      color:#fff;font-size:14px;z-index:9999;box-shadow:0 2px 8px rgba(0,0,0,.2)
+    }
+    .toast.ok{background:#2e7d32}
+    .toast.err{background:#d32f2f}
     @media (max-width:900px){ .compact-grid{grid-template-columns:1fr} }
   `;
   document.head.appendChild(style);
+}
+
+/* -------------------- ui helpers -------------------- */
+function showToast(message, isError = false) {
+  const t = document.createElement("div");
+  t.className = `toast ${isError ? "err" : "ok"}`;
+  t.textContent = message;
+  document.body.appendChild(t);
+  setTimeout(() => t.remove(), 2000);
+}
+
+async function sendReservationWebhook(record) {
+  try {
+    const res = await fetch(WEBHOOK_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "key": WEBHOOK_KEY
+      },
+      body: JSON.stringify(record)
+    });
+
+    if (res.ok) {
+      showToast("Notification sent");
+      return true;
+    }
+    showToast("Notification failed", true);
+    return false;
+  } catch (err) {
+    console.error("Webhook error:", err);
+    showToast("Notification failed", true);
+    return false;
+  }
 }
 
 /* -------------------- main tabs -------------------- */
@@ -345,6 +393,11 @@ async function fetchAll() {
   return await res.json();
 }
 
+async function fetchById(id) {
+  const res = await fetch(`${API_BASE}/${id}`);
+  return await res.json();
+}
+
 async function loadAllRecords() {
   const data = await fetchAll();
   renderResults(data);
@@ -404,14 +457,27 @@ function renderResults(records) {
       panelWrap.appendChild(panel);
     });
 
+    const actions = document.createElement("div");
+    actions.className = "inline-actions";
+
+    const notifyBtn = document.createElement("button");
+    notifyBtn.className = "notify-btn";
+    notifyBtn.textContent = "Notify";
+    notifyBtn.addEventListener("click", async () => {
+      const latest = await fetchById(rec.id);
+      await sendReservationWebhook(latest);
+    });
+
     const del = document.createElement("button");
     del.className = "btn btn-red";
     del.textContent = "Delete";
     del.addEventListener("click", () => deleteRecord(rec.id));
 
+    actions.append(notifyBtn, del);
+
     card.appendChild(tabs);
     card.appendChild(panelWrap);
-    card.appendChild(del);
+    card.appendChild(actions);
 
     box.appendChild(card);
   });
@@ -481,10 +547,20 @@ function inlineEditField(rec, field) {
   save.textContent = "Save";
 
   save.addEventListener("click", async () => {
+    const oldStatus = rec.reservationStatus;
     const newVal = (field.type === "bool") ? (editor.value === "true") : editor.value;
-    await updateRecord(rec.id, { [field.key]: newVal });
+
+    const updated = await updateRecord(rec.id, { [field.key]: newVal });
+    if (!updated) return;
+
     rec[field.key] = newVal;
     cell.textContent = formatValue(newVal);
+
+    // Auto webhook only when reservation status changed and save succeeded
+    if (field.key === "reservationStatus" && oldStatus !== newVal) {
+      await sendReservationWebhook(updated);
+    }
+
     loadKanban();
   });
 
@@ -494,14 +570,22 @@ function inlineEditField(rec, field) {
 
 async function updateRecord(id, patchObj) {
   try {
-    await fetch(`${API_BASE}/${id}`, {
+    const res = await fetch(`${API_BASE}/${id}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(patchObj)
     });
+
+    if (!res.ok) {
+      alert("Update failed.");
+      return null;
+    }
+
+    return await res.json(); // full updated record
   } catch (err) {
     console.error(err);
     alert("Update failed.");
+    return null;
   }
 }
 
@@ -552,8 +636,21 @@ async function loadKanban() {
       if (s === status) o.selected = true;
       statusSel.appendChild(o);
     });
+
     statusSel.addEventListener("change", async () => {
-      await updateRecord(rec.id, { reservationStatus: statusSel.value });
+      const oldStatus = rec.reservationStatus;
+      const newStatus = statusSel.value;
+
+      const updated = await updateRecord(rec.id, { reservationStatus: newStatus });
+      if (!updated) return;
+
+      rec.reservationStatus = newStatus;
+
+      // Auto webhook only after successful save and only if status changed
+      if (oldStatus !== newStatus) {
+        await sendReservationWebhook(updated);
+      }
+
       loadKanban();
       loadAllRecords();
     });
@@ -591,6 +688,19 @@ async function loadKanban() {
 
     card.appendChild(tabs);
     card.appendChild(panelWrap);
+
+    // Notify button in each Kanban card
+    const actions = document.createElement("div");
+    actions.className = "inline-actions";
+    const notifyBtn = document.createElement("button");
+    notifyBtn.className = "notify-btn";
+    notifyBtn.textContent = "Notify";
+    notifyBtn.addEventListener("click", async () => {
+      const latest = await fetchById(rec.id);
+      await sendReservationWebhook(latest);
+    });
+    actions.appendChild(notifyBtn);
+    card.appendChild(actions);
 
     if (status === "Booked") colBooked.appendChild(card);
     if (status === "Confirmed") colConfirmed.appendChild(card);
