@@ -1,0 +1,289 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Tourism Webhook Test</title>
+  <style>
+    :root{
+      --bg:#0f1420;
+      --panel:#161d2f;
+      --line:#2b3652;
+      --text:#e8edf8;
+      --muted:#a7b2ca;
+      --green:#2e7d32;
+      --red:#d32f2f;
+      --btnGreen:#2e7d32;
+    }
+    *{box-sizing:border-box}
+    body{margin:0;background:var(--bg);color:var(--text);font-family:Arial, Helvetica, sans-serif;}
+    .wrap{max-width:1400px;margin:20px auto;padding:0 14px 30px;}
+    h1{margin:0 0 6px}
+    .muted{color:var(--muted);font-size:.9rem;margin-bottom:14px}
+    .toolbar{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px;}
+    button{
+      border:1px solid var(--line);background:#23304a;color:#fff;border-radius:8px;
+      padding:8px 12px;cursor:pointer;font-weight:700;
+    }
+    .notify-btn{width:100%;margin-top:10px;background:var(--btnGreen);border:1px solid #3e9d4c;}
+
+    .kanban{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;}
+    .col{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:10px;min-height:200px;}
+    .col h2{margin:0 0 10px;font-size:1rem;}
+
+    .card{background:#1b2438;border:1px solid #334162;border-radius:10px;padding:10px;margin-bottom:10px;}
+    .card-head{margin-bottom:8px;font-size:.95rem;color:#dbe4fb}
+
+    .group{
+      border:1px solid #3a4a6b;border-radius:8px;padding:8px;margin-bottom:8px;background:#162036;
+    }
+    .group-title{
+      display:flex;align-items:center;gap:8px;font-weight:700;font-size:.9rem;margin-bottom:6px;color:#d8e2fb;
+    }
+    .status-dot{
+      width:12px;height:12px;border-radius:50%;display:inline-block;flex:0 0 12px;
+      border:1px solid rgba(255,255,255,.25);
+    }
+    .dot-green{background:var(--green)}
+    .dot-red{background:var(--red)}
+
+    .field{font-size:.83rem;margin-bottom:4px;line-height:1.35;word-break:break-word;color:#d8e0f6;}
+    .field b{color:#c2d0f0}
+    .check{font-size:1rem;font-weight:700;vertical-align:middle;}
+    .check.green{color:var(--green)}
+    .check.red{color:var(--red)}
+
+    .status-row{margin-top:8px;}
+    select{
+      width:100%;background:#121a2b;color:#fff;border:1px solid #3a4a6b;border-radius:7px;padding:7px 8px;
+    }
+
+    .toast{
+      position:fixed;top:14px;right:14px;color:#fff;border-radius:8px;padding:10px 14px;z-index:9999;
+      font-size:.9rem;box-shadow:0 2px 8px rgba(0,0,0,.25);
+    }
+    .ok{background:var(--green)}
+    .err{background:var(--red)}
+    @media (max-width:1100px){ .kanban{grid-template-columns:1fr} }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>Tourism Webhook Test</h1>
+    <div class="muted">Edit only reservation status. On successful update, full record is posted to webhook.</div>
+    <div class="toolbar">
+      <button id="reloadBtn">Reload Records</button>
+    </div>
+
+    <div class="kanban">
+      <section class="col"><h2>Booked</h2><div id="colBooked"></div></section>
+      <section class="col"><h2>Confirmed</h2><div id="colConfirmed"></div></section>
+      <section class="col"><h2>Cancelled</h2><div id="colCancelled"></div></section>
+    </div>
+  </div>
+
+  <script>
+    const API_BASE = "https://69f277cab15130b97352f41e.mockapi.io/Customer";
+    const WEBHOOK_URL = "https://hooks.us.webexconnect.io/events/IS1C1C1PX4";
+    const WEBHOOK_KEY = "1d58169c-1cbe-11f0-910b-02e3b0a35a3b";
+
+    document.addEventListener("DOMContentLoaded", () => {
+      document.getElementById("reloadBtn").addEventListener("click", loadKanban);
+      loadKanban();
+    });
+
+    const safe = v => String(v ?? "").replace(/[<>&]/g, s => ({ "<":"&lt;", ">":"&gt;", "&":"&amp;" }[s]));
+    const asBool = v => v === true || v === "true";
+
+    function showToast(message, isError = false) {
+      const t = document.createElement("div");
+      t.className = `toast ${isError ? "err" : "ok"}`;
+      t.textContent = message;
+      document.body.appendChild(t);
+      setTimeout(() => t.remove(), 2000);
+    }
+
+    function boolDot(value) {
+      return `<span class="status-dot ${value ? "dot-green" : "dot-red"}"></span>`;
+    }
+
+    function checkIcon(value) {
+      return value ? `<span class="check green">✔</span>` : `<span class="check red">✘</span>`;
+    }
+
+    function fieldLine(label, value) {
+      return `<div class="field"><b>${safe(label)}:</b> ${safe(value ?? "")}</div>`;
+    }
+
+    function buildGroup(title, dotOn, bodyHtml) {
+      return `
+        <div class="group">
+          <div class="group-title">${boolDot(dotOn)}<span>${safe(title)}</span></div>
+          ${bodyHtml}
+        </div>
+      `;
+    }
+
+    async function fetchAllRecords() {
+      const res = await fetch(API_BASE);
+      if (!res.ok) throw new Error(`Load failed: ${res.status}`);
+      return await res.json();
+    }
+
+    async function updateStatus(id, newStatus) {
+      const res = await fetch(`${API_BASE}/${id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ reservationStatus: newStatus })
+      });
+      if (!res.ok) throw new Error(`Update failed: ${res.status}`);
+      return await res.json();
+    }
+
+    async function sendWebhook(record) {
+      const res = await fetch(WEBHOOK_URL, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "key": WEBHOOK_KEY
+        },
+        body: JSON.stringify(record)
+      });
+      if (!res.ok) throw new Error(`Webhook failed: ${res.status}`);
+    }
+
+    function personalDotFromStatus(status) {
+      return String(status || "Booked") !== "Cancelled";
+    }
+
+    function buildCard(rec) {
+      const card = document.createElement("div");
+      card.className = "card";
+
+      const head = document.createElement("div");
+      head.className = "card-head";
+      head.innerHTML = `<strong>${safe(rec.firstName)} ${safe(rec.lastName)}</strong> <span style="color:#9fb0d6">| id: ${safe(rec.id)}</span>`;
+      card.appendChild(head);
+
+      const personalDot = personalDotFromStatus(rec.reservationStatus);
+      const airportDot = asBool(rec.airportTransfer);
+      const exp1Dot = asBool(rec.experience1Status);
+      const exp2Dot = asBool(rec.experience2Status);
+
+      const personalHtml = [
+        fieldLine("First Name", rec.firstName),
+        fieldLine("Last Name", rec.lastName),
+        fieldLine("Phone Number", rec.phoneNumber),
+        fieldLine("Email", rec.email),
+        fieldLine("Reservation ID", rec.reservationId),
+        fieldLine("Reservation Status", rec.reservationStatus || "Booked")
+      ].join("");
+
+      const airportHtml = [
+        fieldLine("Airport Transfer Date", rec.airportTransferDate),
+        fieldLine("Airport Transfer Time", rec.airportTransferTime)
+      ].join("");
+
+      const exp1Html = [
+        fieldLine("Experience 1 Name", rec.experience1Name),
+        fieldLine("Experience 1 Date", rec.experience1Date),
+        fieldLine("Experience 1 Time", rec.experience1Time),
+        `<div class="field"><b>Experience 1 Transfer:</b> ${checkIcon(asBool(rec.experience1Transfer))}</div>`,
+        fieldLine("Experience 1 VIP", asBool(rec.experience1Vip) ? "Yes" : "No")
+      ].join("");
+
+      const exp2Html = [
+        fieldLine("Experience 2 Name", rec.experience2Name),
+        fieldLine("Experience 2 Date", rec.experience2Date),
+        fieldLine("Experience 2 Time", rec.experience2Time),
+        `<div class="field"><b>Experience 2 Transfer:</b> ${checkIcon(asBool(rec.experience2Transfer))}</div>`,
+        fieldLine("Experience 2 VIP", asBool(rec.experience2Vip) ? "Yes" : "No")
+      ].join("");
+
+      const grouped = document.createElement("div");
+      grouped.innerHTML =
+        buildGroup("Personal Information", personalDot, personalHtml) +
+        buildGroup("Airport Transfer", airportDot, airportHtml) +
+        buildGroup("Experience 1", exp1Dot, exp1Html) +
+        buildGroup("Experience 2", exp2Dot, exp2Html);
+
+      card.appendChild(grouped);
+
+      const statusRow = document.createElement("div");
+      statusRow.className = "status-row";
+
+      const statusSel = document.createElement("select");
+      ["Booked","Confirmed","Cancelled"].forEach(s => {
+        const o = document.createElement("option");
+        o.value = s;
+        o.textContent = s;
+        if ((rec.reservationStatus || "Booked") === s) o.selected = true;
+        statusSel.appendChild(o);
+      });
+
+      statusSel.addEventListener("change", async () => {
+        const oldStatus = rec.reservationStatus || "Booked";
+        const newStatus = statusSel.value;
+        if (oldStatus === newStatus) return;
+
+        try {
+          const updated = await updateStatus(rec.id, newStatus);
+          await sendWebhook(updated);
+          showToast("Status updated + webhook sent");
+          await loadKanban();
+        } catch (e) {
+          console.error(e);
+          showToast("Status update/webhook failed", true);
+          await loadKanban();
+        }
+      });
+
+      statusRow.appendChild(statusSel);
+      card.appendChild(statusRow);
+
+      const notifyBtn = document.createElement("button");
+      notifyBtn.className = "notify-btn";
+      notifyBtn.textContent = "Notify";
+      notifyBtn.addEventListener("click", async () => {
+        try {
+          await sendWebhook(rec);
+          showToast("Manual notification sent");
+        } catch (e) {
+          console.error(e);
+          showToast("Manual notification failed", true);
+        }
+      });
+      card.appendChild(notifyBtn);
+
+      return card;
+    }
+
+    async function loadKanban() {
+      const colBooked = document.getElementById("colBooked");
+      const colConfirmed = document.getElementById("colConfirmed");
+      const colCancelled = document.getElementById("colCancelled");
+      colBooked.innerHTML = "";
+      colConfirmed.innerHTML = "";
+      colCancelled.innerHTML = "";
+
+      try {
+        const data = await fetchAllRecords();
+
+        data.forEach(rec => {
+          const status = ["Booked","Confirmed","Cancelled"].includes(rec.reservationStatus)
+            ? rec.reservationStatus
+            : "Booked";
+          const card = buildCard(rec);
+
+          if (status === "Booked") colBooked.appendChild(card);
+          if (status === "Confirmed") colConfirmed.appendChild(card);
+          if (status === "Cancelled") colCancelled.appendChild(card);
+        });
+      } catch (e) {
+        console.error(e);
+        showToast("Failed to load records", true);
+      }
+    }
+  </script>
+</body>
+</html>
